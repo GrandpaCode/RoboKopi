@@ -110,13 +110,13 @@ python3 RoboKopi.py <source_path> <destination_path> [options]
 
 ```bash
 # Basic Local Synchronization File Migration Run
-python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media
+python3 ./RoboKopi.py /SourceDir /DestDir
 
 # Aggressive Optimization Pass Using custom 4MB Block Arrays
-python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media --MT 4 --buffer-size 4194304
+python3 ./RoboKopi.py /SourceDir /DestDir --MT 4 --buffer-size 4194304
 
 # Resilient Processing Run Applying traditional Option Slashes
-python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media /MT 8 /BUFFER 2097152
+python3 ./RoboKopi.py /SourceDir /DestDir /MT 8 /BUFFER 2097152
 
 ```
 
