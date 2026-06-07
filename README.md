@@ -129,5 +129,3 @@ The engine terminates using a bitmask mapping model, letting automation environm
 * `0` (0x00): Invariant Run. Source matched destination perfectly. No data transformations required.
 * `1` (0x01): Replication Success. Data blocks streamed, passed cryptographic verification, and committed cleanly with zero errors.
 * `8` (0x08): Severe Systemic Outage. Found unrecoverable operating system permission blocks or fatal storage disk hardware faults. Process halted to safeguard your file layout state.
-
-```
