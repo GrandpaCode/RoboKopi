@@ -1,4 +1,4 @@
-# High-Performance Resilient File Replication Engine (robocopy.py)
+# High-Performance Resilient File Replication Engine (RoboKopi.py)
 
 An industrial-grade, single-file data replication engine written in Python. This utility bridges the gap between raw low-level unbuffered block I/O operations and transactional state safety, providing a robust synchronization framework optimized for high-bandwidth local mounts, cloud storage interfaces, and network transport boundaries.
 
@@ -18,7 +18,7 @@ The engine is engineered around three distinct operational planes combined into 
 
 ## Functional Architecture Directory Mapping
 
-The following catalog outlines the internal functional layers organizing the execution footprint of `robocopy.py`:
+The following catalog outlines the internal functional layers organizing the execution footprint of `RoboKopi.py`:
 
 ### Core Data Streams & Block I/O Primitives
 * `read_file_metadata_quick(file_path)`: Pulls size, modification timestamps, and hardware inode allocation markers using filesystem kernel shortcuts.
