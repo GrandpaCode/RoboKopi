@@ -85,7 +85,7 @@ graph TD
     V --> W[Emit Industrial Bitmask Status Code and Exit Cleanly]
     U --> W
 
----
+```
 
 ## Operating Instructions & Command Line Interface
 
