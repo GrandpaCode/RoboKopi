@@ -1,4 +1,6 @@
-# High-Performance Resilient File Replication Engine (RoboKopi.py)
+# RoboKopi
+
+## A High-Performance Resilient File Replication Engine inspired by Robocopy.exe
 
 An industrial-grade, single-file data replication engine written in Python. This utility bridges the gap between raw low-level unbuffered block I/O operations and transactional state safety, providing a robust synchronization framework optimized for high-bandwidth local mounts, cloud storage interfaces, and network transport boundaries.
 
