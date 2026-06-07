@@ -84,3 +84,50 @@ graph TD
     T --> V[Mark p100 True - Commit Summary Report to Storage]
     V --> W[Emit Industrial Bitmask Status Code and Exit Cleanly]
     U --> W
+
+---
+
+## Operating Instructions & Command Line Interface
+
+Invoke the engine using either standard POSIX parameters or traditional RoboKopi option variables.
+
+### General Syntax Structure
+
+```bash
+python3 RoboKopi.py <source_path> <destination_path> [options]
+
+```
+
+### Supported Performance Parameter Configurations
+
+* `source`: Path pointing to the source data folder boundary.
+* `destination`: Path pointing to the target migration or backup folder location.
+* `--MT`, `/MT <int>`: Allocates multi-threaded background processing pools (Default: `1`).
+* `--BUFFER`, `/BUFFER <bytes>`: Adjusts unbuffered data loop transfer block chunk capacity limits (Default: `2097152` for 2MB blocks).
+* `--NOATOMIC`, `/NOATOMIC`: Forces standard destructive replacement loops, bypassing single-instruction file system rename operations.
+
+### Deployment Examples
+
+```bash
+# Basic Local Synchronization File Migration Run
+python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media
+
+# Aggressive Optimization Pass Using custom 4MB Block Arrays
+python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media --MT 4 --buffer-size 4194304
+
+# Resilient Processing Run Applying traditional Option Slashes
+python3 ./RoboKopi.py /Users/loundsv/Downloads /Volumes/media /MT 8 /BUFFER 2097152
+
+```
+
+---
+
+## Infrastructure Bitmask Exit Code Table Reference
+
+The engine terminates using a bitmask mapping model, letting automation environments evaluate the exact health of completed tasks:
+
+* `0` (0x00): Invariant Run. Source matched destination perfectly. No data transformations required.
+* `1` (0x01): Replication Success. Data blocks streamed, passed cryptographic verification, and committed cleanly with zero errors.
+* `8` (0x08): Severe Systemic Outage. Found unrecoverable operating system permission blocks or fatal storage disk hardware faults. Process halted to safeguard your file layout state.
+
+```
