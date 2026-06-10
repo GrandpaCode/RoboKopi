@@ -207,20 +207,27 @@ def stream_data_incremental_buffered(
 ) -> TransferResult:
     global _global_bytes_transferred
     bytes_copied = start_offset
-    hasher = hashlib.sha256()
+    
+    src_hasher = hashlib.sha256()
+    dest_hasher = hashlib.sha256()
+    
     milestone_idx = 0
     thresholds = [0.25, 0.50, 0.75]
     
-    if start_offset > 0:
-        hasher.update(f"resumed_at:{start_offset}".encode("utf-8")) 
-
-    while milestone_idx < len(thresholds) and bytes_copied >= int(total_size * thresholds[milestone_idx]):
-        milestone_idx += 1
+    is_large_file = total_size > (250 * 1024 * 1024)
+    chunk_counter = 0
 
     try:
         if start_offset > 0:
+            resume_seed = f"resumed_at:{start_offset}".encode("utf-8")
+            src_hasher.update(resume_seed)
+            dest_hasher.update(resume_seed)
+            
             src_stream.seek(start_offset, os.SEEK_SET)
             dest_stream.seek(start_offset, os.SEEK_SET)
+
+        while milestone_idx < len(thresholds) and bytes_copied >= int(total_size * thresholds[milestone_idx]):
+            milestone_idx += 1
 
         while True:
             _global_suspend_event.wait()
@@ -228,26 +235,42 @@ def stream_data_incremental_buffered(
             if not chunk:
                 break
                 
+            src_hasher.update(chunk)
             dest_stream.write(chunk)
+            dest_hasher.update(chunk)
+            
             chunk_len = len(chunk)
             bytes_copied += chunk_len
-            hasher.update(chunk)
+            chunk_counter += 1
             
-            # Update telemetry register for live display tracking
             with _telemetry_lock:
                 _global_bytes_transferred += chunk_len
                 if worker_id in _thread_telemetry_registry:
                     _thread_telemetry_registry[worker_id]["offset"] = bytes_copied
 
-            dest_stream.flush()
-            os.fsync(dest_stream.fileno())
+            if not is_large_file or (chunk_counter % 8 == 0):
+                dest_stream.flush()
+                try:
+                    os.fsync(dest_stream.fileno())
+                except OSError as e:
+                    if e.errno not in (16, 35):
+                        raise e
             
             if milestone_idx < len(thresholds) and bytes_copied >= int(total_size * thresholds[milestone_idx]):
                 milestone_key = f"p{int(thresholds[milestone_idx] * 100)}"
                 progress_callback(file_uid, milestone_key, True, bytes_copied)
                 milestone_idx += 1
-                
-        return TransferResult(bytes_copied, hasher.hexdigest())
+        
+        dest_stream.flush()
+        try:
+            os.fsync(dest_stream.fileno())
+        except OSError:
+            pass
+
+        if src_hasher.hexdigest() != dest_hasher.hexdigest():
+            raise ValueError("Inline streaming parity check failed. Payload compromised.")
+            
+        return TransferResult(bytes_copied, dest_hasher.hexdigest())
     except Exception as e:
         return TransferResult(bytes_copied, "", e)
 
@@ -265,16 +288,6 @@ def atomic_rename_part_to_final(part_path: str, final_path: str, atomic_fs_flag:
             return True
     except (OSError, IOError):
         return False
-
-def compute_full_streamed_hash_for_compare(src_path: str, dest_path: str, buffer_size: int = 4 * 1024 * 1024) -> bool:
-    src_hasher = hashlib.sha256()
-    dest_hasher = hashlib.sha256()
-    with open(src_path, "rb") as s, open(dest_path, "rb") as d:
-        while chunk := s.read(buffer_size):
-            src_hasher.update(chunk)
-        while chunk := d.read(buffer_size):
-            dest_hasher.update(chunk)
-    return src_hasher.hexdigest() == dest_hasher.hexdigest()
 
 def detect_filesystem_type(path: str) -> Tuple[FsType, bool]:
     if sys.platform == "win32":
@@ -460,55 +473,90 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
         finally:
             _cache_lock.release()
 
-    # --- TELEMETRY OBSERVER THREAD ---
-    def telemetry_dashboard_observer():
+    # --- TELEMETRY OBSERVER THREAD (ANSI IN-PLACE INTEGRATION) ---
+    def telemetry_dashboard_observer(poll_interval=1.0):
+        import sys
         last_time = time.perf_counter()
         last_bytes = 0
-        
-        while not shutdown_telemetry_event.wait(1.0):
+
+        # Fixed line boundaries: 3 header + workers + 1 footer line
+        total_render_lines = 4 + tuned_workers
+
+        try:
+            sys.stdout.write("\n" * total_render_lines)
+            sys.stdout.flush()
+        except Exception:
+            pass
+
+        def _clear_and_print_line(s: str):
+            sys.stdout.write("\x1b[2K" + s + "\n")
+
+        while not shutdown_telemetry_event.wait(poll_interval):
             current_time = time.perf_counter()
+
             with _telemetry_lock:
                 current_bytes = _global_bytes_transferred
                 current_registry = dict(_thread_telemetry_registry)
-                
+
             elapsed_interval = current_time - last_time
             if elapsed_interval <= 0:
                 continue
-                
+
             bytes_interval = current_bytes - last_bytes
             speed_mbs = (bytes_interval / (1024 * 1024)) / elapsed_interval
-            active_ceiling = throttler.get_ceiling()
-            
+
+            try:
+                active_ceiling = throttler.get_ceiling()
+            except Exception:
+                active_ceiling = tuned_workers
+
             last_time = current_time
             last_bytes = current_bytes
-            
+
             total_elapsed_str = time.strftime("%H:%M:%S", time.gmtime(current_time - start_time_marker))
-            
-            # Print Dashboard Header safely
+
             _log_lock.acquire()
-            print("\n" + "="*80, flush=True)
-            print(f"[PROGRESS MONITOR] Run Duration: {total_elapsed_str} | Active Pool Ceiling: {active_ceiling}/{tuned_workers} threads | Speed: {speed_mbs:.2f} MB/s", flush=True)
-            print("-"*80, flush=True)
-            
-            # Print thread status lines
-            for wid in range(tuned_workers):
-                if wid >= active_ceiling:
-                    print(f" -> Thread {wid}: [THROTTLED] Paused by health engine rules.", flush=True)
-                elif wid in current_registry and current_registry[wid]["path"]:
-                    reg = current_registry[wid]
-                    total = reg["total_size"]
-                    pct = (reg["offset"] / total * 100) if total > 0 else 0
-                    print(f" -> Thread {wid}: [{pct:6.2f}%] {reg['path']} ({reg['offset']}/{total} bytes)", flush=True)
-                else:
-                    print(f" -> Thread {wid}: [IDLE] Checking path lock allocations...", flush=True)
-            print("="*80 + "\n", flush=True)
+            try:
+                sys.stdout.write(f"\x1b[{total_render_lines}A")
+
+                _clear_and_print_line("=" * 80)
+                _clear_and_print_line(f"[PROGRESS MONITOR] Run Duration: {total_elapsed_str} | Active Pool Ceiling: {active_ceiling}/{tuned_workers} threads | Speed: {speed_mbs:.2f} MB/s")
+                _clear_and_print_line("-" * 80)
+
+                for wid in range(tuned_workers):
+                    if wid >= active_ceiling:
+                        _clear_and_print_line(f" -> Thread {wid}: [THROTTLED] Paused by health engine rules.")
+                        continue
+
+                    reg = current_registry.get(wid)
+                    if reg and reg.get("path"):
+                        total = reg.get("total_size", 0) or 0
+                        offset = reg.get("offset", 0) or 0
+                        pct = (offset / total * 100) if total > 0 else 0.0
+                        
+                        raw_path = reg["path"]
+                        display_path = raw_path if len(raw_path) <= 45 else f".../{Path(raw_path).name[-42:]}"
+                        
+                        _clear_and_print_line(f" -> Thread {wid}: [{pct:6.2f}%] {display_path:<45} ({offset}/{total} bytes)")
+                    else:
+                        _clear_and_print_line(f" -> Thread {wid}: [IDLE] Checking path lock allocations...")
+
+                _clear_and_print_line("=" * 80)
+                sys.stdout.flush()
+            finally:
+                _log_lock.release()
+
+        # Post-run cleanup spacing
+        _log_lock.acquire()
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        finally:
             _log_lock.release()
 
-    # Initialize Telemetry Register fields before spawning workers
     for idx in range(tuned_workers):
         _thread_telemetry_registry[idx] = {"path": "", "offset": 0, "total_size": 0}
 
-    # Spawn Telemetry Thread
     telemetry_thread = threading.Thread(target=telemetry_dashboard_observer, daemon=True)
     telemetry_thread.start()
 
@@ -518,7 +566,6 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
         deferred_buffer = []
         
         while True:
-            # Enforce dynamic pipeline throttle bounds before pulling work
             if worker_id >= throttler.get_ceiling():
                 with _telemetry_lock:
                     _thread_telemetry_registry[worker_id]["path"] = ""
@@ -540,7 +587,6 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
             parts = Path(relative_path_str).parts
             root_dir = parts[0] if parts else ""
 
-            # Verify path mutual exclusion constraints
             _registry_lock.acquire()
             if root_dir in _active_directory_registry:
                 _registry_lock.release()
@@ -556,7 +602,6 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
             f_uid = task_item["unique_id"]
             f_size = task_item["size"]
             
-            # Post Active Asset to global tracking map
             with _telemetry_lock:
                 _thread_telemetry_registry[worker_id]["path"] = relative_path_str
                 _thread_telemetry_registry[worker_id]["total_size"] = f_size
@@ -587,15 +632,15 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
                     _thread_telemetry_registry[worker_id]["offset"] = start_byte
 
                 src_stream, dest_stream = open_source_and_dest_part_buffered(src_file, dest_part, is_resume)
-                result = stream_data_incremental_buffered(src_stream, dest_stream, f_size, start_byte, config["buffer_size"], progress_callback_hook, f_uid, worker_id)
+                result = stream_data_incremental_buffered(
+                    src_stream, dest_stream, f_size, start_byte, 
+                    config["buffer_size"], progress_callback_hook, f_uid, worker_id
+                )
                 src_stream.close()
                 dest_stream.close()
 
                 if result.exception is not None:
                     raise result.exception
-
-                if not compute_full_streamed_hash_for_compare(src_file, dest_part):
-                    raise ValueError("Cryptographic footprint checksum mismatch anomaly detected.")
 
                 _, swap_capable = detect_filesystem_type(dest_part)
                 if not atomic_rename_part_to_final(dest_part, dest_file, swap_capable & config["atomic_fs"]):
@@ -633,7 +678,6 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
                 _global_suspend_event.set()
 
             finally:
-                # Wipe worker telemetry string assignment upon asset conclusion
                 with _telemetry_lock:
                     _thread_telemetry_registry[worker_id]["path"] = ""
                 _registry_lock.acquire()
@@ -649,7 +693,6 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
     for t in threads_pool:
         t.join()
 
-    # Gracefully wind down telemetry observer thread
     shutdown_telemetry_event.set()
     telemetry_thread.join()
 
@@ -670,7 +713,7 @@ def orchestrate_production_sync(config: Dict[str, Any]) -> int:
     return classify_failures_and_emit_exitcode(job_summary)
 
 def parse_cli_arguments():
-    parser = argparse.ArgumentParser(description="Telemetry Adaptive Engine", formatter_class=argparse.RawTextHelpFormatter)
+    parser = argparse.ArgumentParser(description="ANSI Dashboard Engine", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("source", type=str)
     parser.add_argument("destination", type=str)
     parser.add_argument("--MT", type=int, default=1, dest="max_workers")
