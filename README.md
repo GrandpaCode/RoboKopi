@@ -57,7 +57,7 @@ graph TD
     D -- Yes --> E[Classify as SKIP - Target Is Invariant]
     D -- No --> F[Classify as RESUME - Partial Target Identified]
     
-    C -- No --> G[Classify as NEW / MUTATED TASK]
+    C -- No --> G[Classify as NEW or MUTATED TASK]
     
     F --> H[Verify Size and Part Alignment]
     G --> I[Truncate Target to Byte 0]
@@ -69,23 +69,32 @@ graph TD
     K --> L{Suspend Gate Set?}
     L -- Yes --> M[Yield Loop - Wait for Connection Recovery]
     M --> L
-    L -- No --> N[Read Unbuffered Data Chunk]
     
-    N --> O[Write Chunk and Update Checksum Hasher]
-    O --> P{Crossed 25-50-75 Threshold?}
-    P -- Yes --> Q[Flush Progress Database State safely to Disk]
-    P -- No --> R{EOF Reached?}
-    Q --> R
+    L -- No --> N[Read Chunk from Source Stream]
+    N --> O[Update Inline Source and Destination Hash Accumulators]
+    O --> P[Write Chunk to Destination Part File]
     
-    R -- No --> L
-    R -- Yes --> S[Verify Full-Stream Cryptographic SHA-256 Match]
+    P --> Q{Is File Size GT 250MB and Chunk Counter Mod 8 NOT 0?}
+    Q -- Yes --> R[Skip Immediate Hardware Flush to Protect Buffers]
+    Q -- No --> S[Execute Stream Flush and Kernel Descriptor Fsync]
     
-    S -- Pass --> T[Execute OS Kernel Atomic Rename Swap]
-    S -- Fail --> U[Flag Asset Corrupted - Write Local Diagnostic Logs]
+    R --> T{Crossed 25-50-75 Threshold?}
+    S --> T
     
-    T --> V[Mark p100 True - Commit Summary Report to Storage]
-    V --> W[Emit Industrial Bitmask Status Code and Exit Cleanly]
-    U --> W
+    T -- Yes --> U[Flush Progress Database State safely to Disk]
+    T -- No --> V{EOF Reached?}
+    U --> V
+    
+    V -- No --> L
+    V -- Yes --> W[Execute Definitive Trailing EOF Fsync]
+    
+    W --> X{Inline Source Hash Matches Destination Hash?}
+    X -- Pass --> Y[Execute OS Kernel Atomic Rename Swap]
+    X -- Fail --> Z[Flag Asset Corrupted - Write Local Diagnostic Logs]
+    
+    Y --> AA[Mark p100 True - Commit Summary Report to Storage]
+    AA --> AB[Emit Industrial Bitmask Status Code and Exit Cleanly]
+    Z --> AB
 
 ```
 
